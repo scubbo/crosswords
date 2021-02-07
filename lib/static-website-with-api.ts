@@ -1,12 +1,14 @@
 import * as cdk from '@aws-cdk/core';
-import { Bucket } from '@aws-cdk/aws-s3';
+import {Bucket} from '@aws-cdk/aws-s3';
 import {BucketDeployment, Source} from "@aws-cdk/aws-s3-deployment";
 import {ARecord, CnameRecord, HostedZone, IHostedZone, RecordTarget} from "@aws-cdk/aws-route53";
-import { strict as assert } from 'assert';
+import {strict as assert} from 'assert';
 import {AssetCode, Function, Runtime} from "@aws-cdk/aws-lambda";
 import {LambdaRestApi} from "@aws-cdk/aws-apigateway";
 import {ApiGateway} from "@aws-cdk/aws-route53-targets";
 import {Certificate} from "@aws-cdk/aws-certificatemanager";
+import {RetentionDays} from "@aws-cdk/aws-logs";
+import {Fn} from "@aws-cdk/core";
 
 export interface StaticWebsiteWithApiProps {
     websiteDomainRecord?: string,
@@ -22,6 +24,8 @@ export interface StaticWebsiteWithApiProps {
 }
 
 export class StaticWebsiteWithApi extends cdk.Construct {
+    apiFunction: Function;
+
     constructor(scope: cdk.Construct, id: string, props: StaticWebsiteWithApiProps) {
         super(scope, id);
 
@@ -35,22 +39,26 @@ export class StaticWebsiteWithApi extends cdk.Construct {
     }
 
     private createLogicalResources(zone: IHostedZone, props: StaticWebsiteWithApiProps) {
-        let apiFunc;
         if (props.apiLambda != undefined) {
-            apiFunc = props.apiLambda;
+            this.apiFunction = props.apiLambda;
         } else {
-            apiFunc = new Function(this, 'backend-lambda', {
+            this.apiFunction = new Function(this, 'backend-lambda', {
                 // pathToAssetCode is guaranteed defined by asssertExactlyOnePropertySet,
                 // but TypeScript doesn't know that
                 // (I could probably do this more idiomatically with a Type Guard,
                 // but I'm still learning TypeScript!)
                 code: new AssetCode(props.pathToAssetCode as string),
+                // It never hurts to have this as a reference so you can look up outputs!
+                environment: {
+                    'stackId': Fn.sub('${AWS::StackId}')
+                },
                 handler: props.functionHandler ?? 'index.handler',
-                runtime: Runtime.PYTHON_3_8
+                logRetention: RetentionDays.ONE_WEEK,
+                runtime: Runtime.PYTHON_3_8,
             })
         }
         const api = new LambdaRestApi(this, 'api', {
-            handler: apiFunc,
+            handler: this.apiFunction,
             proxy: true,
             deploy: true,
             domainName: {
