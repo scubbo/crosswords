@@ -49,16 +49,28 @@ def submit_score(event, context):
     }
 
 def get_data(event, context):
+    params = event.get('queryStringParameters')
+    # Can't do `event.get('queryStringParameters', {})` because it's always
+    # present (`None` if no params)
+    if params:
+        date_range = params.get('date_range', None)
+    else:
+        date_range = None
+    if date_range:
+        # Expected format: `2021-02-08_2021-02-11`
+        date_range = date_range.split('_')
+    else:
+        now = datetime.now()
+        date_range = ((now-FOUR_DAYS).strftime(DATE_FORMAT), now.strftime(DATE_FORMAT))
+
     score_table = _get_score_table()
-    # TODO - don't hard-code the date
-    current_date = datetime.now()
     data = score_table.scan(
         ExpressionAttributeNames={
             '#d': 'date'
         },
         ExpressionAttributeValues={
-            ':val1': f'{(current_date-FOUR_DAYS).strftime(DATE_FORMAT)}',
-            ':val2': f'{current_date.strftime(DATE_FORMAT)}'
+            ':val1': date_range[0],
+            ':val2': date_range[1]
         },
         FilterExpression='#d between :val1 and :val2',
     )
