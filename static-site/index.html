@@ -18,6 +18,14 @@ $.get('https://api.'+document.location.hostname+'/get_data', function(data) {
 
     var ctx = document.getElementById('scoreChart').getContext('2d');
     datasets = []
+
+    // I stole these from https://venngage.com/blog/color-blind-friendly-palette -
+    // but, not being colour-blind myself, I can't test them
+    // for suitability.
+    // TODO - more colours (will be necessary to
+    // display more than four players' scores!)
+    colours = ['#0f2080', '#85c0f9', '#a95aa1', '#f5793a']
+
     // Renaming and restructing from what makes sense for the API,
     // to what chart.js expects.
     // If Javascript has dict-comprehensions like Python,
@@ -25,18 +33,17 @@ $.get('https://api.'+document.location.hostname+'/get_data', function(data) {
     for (name in data['scores']) {
         datasets.push({
             label: name,
-            data: data['scores'][name]
+            data: data['scores'][name],
+            fill: false,
+            borderColor: colours.pop()
         })
     }
-    console.log(datasets)
     var myChart = new Chart(ctx, {
         type: 'line',
         data: {
             labels: data['dates'],
             datasets: datasets
         },
-        options: {
-        }
     });
 });
 </script>
