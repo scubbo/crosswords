@@ -10,8 +10,7 @@ function reset_graph(start_date, end_date) {
     // Yuck - but, I'm hosting this site out of an S3 bucket,
     // and that doesn't (so far as I can tell) support hosting
     // the API Gateway on the same domain.
-    $.get('https://api.crossword.scubbo.org/get_data' +
-    // $.get('https://api.'+document.location.hostname+'/get_data' +
+    $.get('/api/get_data' +
             (start_date == undefined ? '': '?date_range=' + start_date + '_' + end_date),
         function(data) {
 
