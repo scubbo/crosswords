@@ -5,6 +5,7 @@ import requests
 from datetime import datetime, timedelta
 
 from bs4 import BeautifulSoup
+from typing import Iterable
 from urllib import parse
 
 
@@ -27,16 +28,17 @@ def get_data(event, context):
     params = event.get('queryStringParameters')
     # Can't do `event.get('queryStringParameters', {})` because it's always
     # present (`None` if no params)
-    if params:
-        date_range = params.get('date_range', None)
-    else:
-        date_range = None
-    if date_range:
-        # Expected format: `2021-02-08_2021-02-11`
-        date_range = date_range.split('_')
-    else:
-        now = datetime.now()
-        date_range = ((now-FOUR_DAYS).strftime(DATE_FORMAT), now.strftime(DATE_FORMAT))
+    if not params:
+        params = {}
+
+    # Expected format: `2021-02-08_2021-02-11`
+    date_range_string = params.get('date_range', '_')
+    # Using `_` as the fallback because that is also what jQuery explicitly sends when no dates
+    # are selected.
+    # TODO - better default-case handling!
+    if date_range_string == '_':
+        date_range_string = f'{(datetime.now()-FOUR_DAYS).strftime(DATE_FORMAT)}_{datetime.now().strftime(DATE_FORMAT)}'
+    date_range = date_range_string.split('_')
 
     score_table = _get_score_table()
     data = score_table.scan(
@@ -50,7 +52,9 @@ def get_data(event, context):
         FilterExpression='#d between :val1 and :val2',
     )
 
-    return _reformat_score_data(data)
+    statistic = params.get('statistic', 'standard')
+
+    return _reformat_score_data(statistic, data)
 
 
 def update_cookie(event, context):
@@ -124,7 +128,14 @@ def _get_date(soup):
     return '-'.join([year, month, day])
 
 
-def _reformat_score_data(data_from_dynamo):
+def _reformat_score_data(statistic, data_from_dynamo):
+    if statistic == 'standard':
+        return _reformat_score_data_standard(data_from_dynamo)
+    if statistic == 'deviation_from_average':
+        return _reformat_score_data_deviation(data_from_dynamo)
+
+
+def _reformat_score_data_standard(data_from_dynamo):
     # This could _probably_ be done in a single pass,
     # but what the heck, this isn't exactly a performance-intensive
     # high-TPS Lambda, nor is it a whiteboarding interview :P
@@ -155,6 +166,50 @@ def _reformat_score_data(data_from_dynamo):
         return_data['scores'][name] = personal_scores
 
     return return_data
+
+
+def _reformat_score_data_deviation(data_from_dynamo):
+    # See above for my defence against the hideous inefficiency of this :P
+    # TODO - we could probably factor this out, and reimplement _standard_ by forcing
+    # the "average baseline" for every date to 0.
+    running_averages = {}
+    intermediate_score_lookup = {}
+    for item in data_from_dynamo['Items']:
+        if item['name'] not in intermediate_score_lookup:
+            intermediate_score_lookup[item['name']] = {}
+        if item['date'] not in running_averages:
+            running_averages[item['date']] = []
+        time = int(item['time'])
+        intermediate_score_lookup[item['name']][item['date']] = time
+        running_averages[item['date']].append(time)
+
+    dates = list(running_averages.keys()).copy()
+    dates.sort()
+
+    def average(iterable: Iterable[int]):
+        sum = 0
+        count = 0
+        for i in iterable:
+            sum += i
+            count += 1
+        return sum // count
+
+    averages = {k: average(v) for k, v in running_averages.items()}
+    return_data = {'dates': dates, 'scores': {}}
+
+    for name in intermediate_score_lookup:
+        personal_scores = []
+        for date in dates:
+            average_for_date = averages[date]
+            if date in intermediate_score_lookup[name]:
+                personal_scores.append(intermediate_score_lookup[name][date] - average_for_date)
+            else:
+                personal_scores.append(None)
+        return_data['scores'][name] = personal_scores
+
+    return return_data
+
+
 
 
 def _get_score_table():

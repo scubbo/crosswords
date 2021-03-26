@@ -17,6 +17,11 @@
         <input type="text" id="start_date_picker" class="datepicker">
         <label for="end_date_picker">End Date</label>
         <input type="text" id="end_date_picker" class="datepicker">
+        <label for="statistic_picker">Statistic:</label>
+        <select id="statistic_picker">
+            <option value="standard">Raw Data</option>
+            <option value="deviation_from_average">Deviation From Average</option>
+        </select>
         <button type="button" id="reset_graph">Reset</button>
     </div>
     <div id="chartContainer" style="width: 1600px; height:800px;">

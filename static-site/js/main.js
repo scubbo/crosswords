@@ -2,16 +2,21 @@ $(document).ready(function() {
     $('.datepicker').datepicker({dateFormat: 'yy-mm-dd'});
     reset_graph()
     $('#reset_graph').click(function() {
-        reset_graph($('#start_date_picker').val(), $('#end_date_picker').val())
+        reset_graph($('#start_date_picker').val(), $('#end_date_picker').val(), $('#statistic_picker').val())
     })
 });
 
-function reset_graph(start_date, end_date) {
-    // Yuck - but, I'm hosting this site out of an S3 bucket,
-    // and that doesn't (so far as I can tell) support hosting
-    // the API Gateway on the same domain.
-    $.get('/api/get_data' +
-            (start_date == undefined ? '': '?date_range=' + start_date + '_' + end_date),
+function reset_graph(start_date, end_date, statistic) {
+    args = {}
+    if (start_date !== undefined) {
+        args['date_range'] = start_date + '_' + end_date
+    }
+    if (statistic !== undefined) {
+        args['statistic'] = statistic
+    }
+
+    $.get('/api/get_data',
+        args,
         function(data) {
 
         var ctx = document.getElementById('scoreChart').getContext('2d');
