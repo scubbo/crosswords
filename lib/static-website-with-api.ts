@@ -25,6 +25,7 @@ export interface StaticWebsiteWithApiProps {
 
 export class StaticWebsiteWithApi extends cdk.Construct {
     apiFunction: Function;
+    hostedZone: IHostedZone; // Externally accessed to permit SES-sending
     private staticSiteBucket: Bucket
 
     constructor(scope: cdk.Construct, id: string, props: StaticWebsiteWithApiProps) {
@@ -32,11 +33,11 @@ export class StaticWebsiteWithApi extends cdk.Construct {
 
         this.assertExactlyOnePropertySet(props, ['function', 'pathToAssetCode']);
 
-        const zone = HostedZone.fromLookup(this, 'baseZone', {
+        this.hostedZone = HostedZone.fromLookup(this, 'baseZone', {
             domainName: props.rootDomain
         })
-        this.createStaticSiteResources(zone, props);
-        this.createLogicalResources(zone, props);
+        this.createStaticSiteResources(this.hostedZone, props);
+        this.createLogicalResources(this.hostedZone, props);
     }
 
     private createLogicalResources(zone: IHostedZone, props: StaticWebsiteWithApiProps) {

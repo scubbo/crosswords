@@ -2,11 +2,16 @@ import boto3
 import hashlib
 import requests
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta, timezone
 
 from bs4 import BeautifulSoup
 from typing import Iterable
 from urllib import parse
+
+import logging
+# https://stackoverflow.com/questions/37703609
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.DEBUG)
 
 
 FOUR_DAYS = timedelta(days=4)
@@ -75,34 +80,74 @@ def update_cookie(event, context):
 
 
 def update_scores(event, context):
-    secrets = boto3.client('secretsmanager')
-    cookies_secret = secrets.get_secret_value(
-        SecretId=SECRET_ID).get('SecretString', '')
-    cookies = dict([(i.split('=')[0], parse.unquote(i.split('=')[1]))
-                    for i in cookies_secret.split('; ')])
-    r = requests.get('https://www.nytimes.com/puzzles/leaderboards', cookies=cookies)
-    soup = BeautifulSoup(r.text, features="html.parser")
-    score_divs = [div for div in
-                  soup.find_all('div', {'class': 'lbd-score'})
-                  if 'no-rank' not in div['class']]
-    scores = [{
-        'name': _get_name(div),
-        'time': _get_time(div)
-    } for div in score_divs]
-    date = _get_date(soup)
 
-    score_table = _get_score_table()
+    now = datetime.now(timezone.utc)
+    shouldEmailNotification = event.get('emailNotification', '').lower() is 'true'
 
-    with score_table.batch_writer() as batch:
-        for score in scores:
-            batch.put_item(Item={
-                'id': _build_id(date, score),
-                'date': date,
-                'name': score['name'],
-                'time': score['time']
-            })
-            print(f'DEBUG - putting data to Dynamo: {date}:{score}')
-    return True
+    try:
+        secrets = boto3.client('secretsmanager')
+        cookies_secret = secrets.get_secret_value(
+            SecretId=SECRET_ID).get('SecretString', '')
+        cookies = dict([(i.split('=')[0], parse.unquote(i.split('=')[1]))
+                        for i in cookies_secret.split('; ')])
+        r = requests.get('https://www.nytimes.com/puzzles/leaderboards', cookies=cookies)
+        soup = BeautifulSoup(r.text, features="html.parser")
+        score_divs = [div for div in
+                      soup.find_all('div', {'class': 'lbd-score'})
+                      if 'no-rank' not in div['class']]
+        scores = [{
+            'name': _get_name(div),
+            'time': _get_time(div)
+        } for div in score_divs]
+        date = _get_date(soup)
+
+        score_table = _get_score_table()
+
+        with score_table.batch_writer() as batch:
+            for score in scores:
+                batch.put_item(Item={
+                    'id': _build_id(date, score),
+                    'date': date,
+                    'name': score['name'],
+                    'time': score['time']
+                })
+                print(f'DEBUG - putting data to Dynamo: {date}:{score}')
+        # TODO - check scores for own username, and send reminder if not received by given time
+        return True
+    except Exception as e:
+        LOG.exception(e)
+        # TODO - customizable time threshold
+        # TODO - consider boundary issues
+        date_string = now.strftime(DATE_FORMAT)
+        if now.time() > time(17, 0, 0, 0, timezone.utc) and \
+                shouldEmailNotification and \
+                not _have_reported_failure_for_date(date_string):
+            # TODO - actually send email
+            LOG.info(f'Reported failure: {e}')
+            _record_reported_failure(date_string)
+
+
+def _record_reported_failure(date_string: str):
+    email_information = _get_email_information_for_date(date_string)
+    if 'date' not in email_information:
+        email_information['date'] = date_string
+    email_information['haveReportedFailure'] = {'B': True}
+    _get_email_table().put_item(Item=email_information)
+
+
+def _have_reported_failure_for_date(date_string: str):
+    email_information = _get_email_information_for_date(date_string)
+    # Default to "True" in order to prevent spam reporting in case of meta-failure
+    return email_information.get('haveReportedFailure', {}).get('B', True)
+
+
+def _get_email_information_for_date(date_string: str):
+    table = _get_email_table()
+    return table.get_item(Key={'date': {'S': date_string}}).get('Item', {})
+
+
+def _get_email_notification_date_info():
+    return boto3.client('dynamo')
 
 
 def _build_id(date, score):
@@ -170,8 +215,6 @@ def _reformat_score_data_standard(data_from_dynamo):
 
 def _reformat_score_data_deviation(data_from_dynamo):
     # See above for my defence against the hideous inefficiency of this :P
-    # TODO - we could probably factor this out, and reimplement _standard_ by forcing
-    # the "average baseline" for every date to 0.
     running_averages = {}
     intermediate_score_lookup = {}
     for item in data_from_dynamo['Items']:
@@ -202,7 +245,9 @@ def _reformat_score_data_deviation(data_from_dynamo):
         for date in dates:
             average_for_date = averages[date]
             if date in intermediate_score_lookup[name]:
-                personal_scores.append(intermediate_score_lookup[name][date] - average_for_date)
+                # Note - this is _not_ the proper mathematical definition of "variance".
+                personal_scores.append(
+                    (intermediate_score_lookup[name][date] - average_for_date) / average_for_date)
             else:
                 personal_scores.append(None)
         return_data['scores'][name] = personal_scores
@@ -210,9 +255,15 @@ def _reformat_score_data_deviation(data_from_dynamo):
     return return_data
 
 
+def _get_email_table():
+    return _get_table_by_export_name('emailTableName')
 
 
 def _get_score_table():
+    return _get_table_by_export_name('scoreTableName')
+
+
+def _get_table_by_export_name(export_name: str):
     cloudformation = boto3.resource('cloudformation')
     # TODO - are the docs at https://bit.ly/36TOxv4 wrong? They claim `.filter` has Return Type
     # `list(cloudformation.Stack)`, but trying to do `.filter(...)[0]` gives
@@ -222,7 +273,7 @@ def _get_score_table():
     stack = next(iter(cloudformation.stacks.filter(StackName='CrosswordStatsStack')))
     table_name = [output['OutputValue']
                   for output in stack.outputs
-                  if output.get('ExportName', '') == 'scoreTableName'][0]
+                  if output.get('ExportName', export_name) == ''][0]
 
     return boto3.resource('dynamodb').Table(table_name)
 
